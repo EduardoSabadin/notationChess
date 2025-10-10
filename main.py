@@ -14,6 +14,7 @@ class ChessApp:
 
         # Variáveis de configuração após inicializar root
         self.show_log = tk.BooleanVar(value=True)
+        self.show_board = tk.BooleanVar(value=True)
         self.stockfish_difficulty = tk.IntVar(value=5)
         
         # Configuração do Pygame
@@ -35,6 +36,7 @@ class ChessApp:
 
         options_menu = tk.Menu(menu_bar, tearoff=0)
         options_menu.add_checkbutton(label="Mostrar Log de Movimentos", variable=self.show_log)
+        options_menu.add_checkbutton(label="Mostrar Tabuleiro", variable=self.show_board)
         menu_bar.add_cascade(label="Opções", menu=options_menu)
         self.root.config(menu=menu_bar)
         
@@ -65,7 +67,7 @@ class ChessApp:
         self.move_entry.bind("<Return>", self.submit_move)
         
         # Configurações de exibição Pygame no Canvas do Tkinter
-        self.canvas = tk.Canvas(self.root, width=640, height=640)
+        self.canvas = tk.Canvas(self.root, width=720, height=720)
         self.canvas.pack(side=tk.RIGHT, padx=10, pady=10)
 
     def update_stockfish_level_label(self, event=None):
@@ -74,7 +76,7 @@ class ChessApp:
 
     def init_pygame(self):
         pygame.init()
-        self.screen = pygame.Surface((640, 640))
+        self.screen = pygame.Surface((720, 720))
         self.colors = [pygame.Color("white"), pygame.Color("gray")]
         self.font = pygame.font.Font(None, 36)
         self.images = self.load_images(80)
@@ -91,19 +93,58 @@ class ChessApp:
         return images
 
     def update_pygame(self):
-        self.screen.fill(pygame.Color("black"))
-        square_size = 80
-        
-        for r in range(8):
+        if not self.show_board.get():
+            # Modo blind chess - esconde o tabuleiro
+            self.screen.fill(pygame.Color("black"))
+            # Texto indicando modo blind chess
+            text = self.font.render("Modo Blind Chess", True, pygame.Color("white"))
+            text_rect = text.get_rect(center=(360, 360))
+            self.screen.blit(text, text_rect)
+        else:
+            self.screen.fill(pygame.Color("black"))
+            square_size = 80
+            board_offset = 40  # Espaço para coordenadas
+            
+            # Desenha o tabuleiro
+            for r in range(8):
+                for c in range(8):
+                    color = self.colors[(r + c) % 2]
+                    pygame.draw.rect(self.screen, color, 
+                                   pygame.Rect(c * square_size + board_offset, 
+                                             r * square_size + board_offset, 
+                                             square_size, square_size))
+                    
+                    piece = self.board.piece_at(chess.square(c, 7 - r))
+                    
+                    if piece:
+                        piece_img = self.images[piece.symbol()]
+                        self.screen.blit(piece_img, (c * square_size + board_offset, 
+                                                   r * square_size + board_offset))
+            
+            # Desenha as coordenadas
+            coord_font = pygame.font.Font(None, 24)
+            
+            # Letras A-H (coluna)
             for c in range(8):
-                color = self.colors[(r + c) % 2]
-                pygame.draw.rect(self.screen, color, pygame.Rect(c * square_size, r * square_size, square_size, square_size))
-                
-                piece = self.board.piece_at(chess.square(c, 7 - r))
-                
-                if piece:
-                    piece_img = self.images[piece.symbol()]
-                    self.screen.blit(piece_img, (c * square_size, r * square_size))
+                letter = chr(ord('A') + c)
+                text = coord_font.render(letter, True, pygame.Color("white"))
+                text_rect = text.get_rect(center=(c * square_size + board_offset + square_size // 2, 20))
+                self.screen.blit(text, text_rect)
+                # Repetir embaixo
+                text_rect = text.get_rect(center=(c * square_size + board_offset + square_size // 2, 
+                                                8 * square_size + board_offset + 20))
+                self.screen.blit(text, text_rect)
+            
+            # Números 1-8 (linha)
+            for r in range(8):
+                number = str(8 - r)  # Inverter porque o tabuleiro está invertido
+                text = coord_font.render(number, True, pygame.Color("white"))
+                text_rect = text.get_rect(center=(20, r * square_size + board_offset + square_size // 2))
+                self.screen.blit(text, text_rect)
+                # Repetir à direita
+                text_rect = text.get_rect(center=(8 * square_size + board_offset + 20, 
+                                                r * square_size + board_offset + square_size // 2))
+                self.screen.blit(text, text_rect)
 
         pil_image = Image.frombytes("RGB", self.screen.get_size(), pygame.image.tostring(self.screen, "RGB"))
         self.tk_image = ImageTk.PhotoImage(pil_image)
@@ -122,8 +163,8 @@ class ChessApp:
         move = self.parse_algebraic(move_text)
 
         if move and move in self.board.legal_moves:
+            self.add_to_log(move)  # Log ANTES de executar o movimento
             self.board.push(move)
-            self.add_to_log(move)  # Passa o objeto move diretamente
             self.move_entry.delete(0, tk.END)
             self.ai_move()  # Chama a IA para fazer o movimento
         else:
@@ -131,16 +172,25 @@ class ChessApp:
             print("Movimento inválido, tente novamente.")
 
     def add_to_log(self, move):
-        print(f"Adding to log: {move}")
         if self.show_log.get():
             try:
+                # Converte para notação SAN (algebraic notation) - ex: e4, Nf3, O-O
                 move_san = self.board.san(move)
                 self.move_log.append(move_san)
-                self.log_text.configure(state="normal")  # Garante que o Text esteja editável
-                self.log_text.insert(tk.END, f"{move_san}\n")
+                
+                # Numera os movimentos (1. e4 e5 2. Nf3 Nc6...)
+                move_number = (len(self.move_log) + 1) // 2
+                if len(self.move_log) % 2 == 1:  # Movimento das brancas
+                    move_text = f"{move_number}. {move_san}"
+                else:  # Movimento das pretas
+                    move_text = f" {move_san}\n"
+                
+                self.log_text.configure(state="normal")
+                self.log_text.insert(tk.END, move_text)
                 self.log_text.see(tk.END)
-                self.log_text.configure(state="disabled")  # Trava o Text novamente
+                self.log_text.configure(state="disabled")
                 self.root.update()
+                print(f"Adicionado ao log: {move_san}")
             except Exception as e:
                 print(f"Erro ao adicionar no log: {e}")
 
@@ -168,8 +218,8 @@ class ChessApp:
         if ai_move:
             move = chess.Move.from_uci(ai_move)
             if move in self.board.legal_moves:
+                self.add_to_log(move)  # Log ANTES de executar o movimento
                 self.board.push(move)
-                self.add_to_log(move)  # Log do movimento da IA
 
 # Inicializa o aplicativo tkinter
 root = tk.Tk()
