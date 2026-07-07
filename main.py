@@ -104,6 +104,54 @@ class ChessApp:
             img = img.resize((size, size), Image.LANCZOS)
             self.tk_piece_images[symbol] = ImageTk.PhotoImage(img)
 
+    def _make_stacked_image(self, symbol, count, size=24, overlap=4):
+        """Creates a PhotoImage of 'count' overlapping pieces of the same type.
+        Pieces of the same type stack tightly; different types are separated."""
+        if count <= 0:
+            return None
+        total_w = size + (count - 1) * overlap
+        img = Image.new('RGBA', (total_w, size), (0, 0, 0, 0))
+        base = Image.open(f'images/{self._image_filename(symbol)}').resize((size, size), Image.LANCZOS)
+        for i in range(count):
+            img.paste(base, (i * overlap, 0), base)
+        return ImageTk.PhotoImage(img)
+
+    def _image_filename(self, symbol):
+        """Maps piece symbol to image filename."""
+        mapping = {
+            'r': 'rb.png', 'n': 'nb.png', 'b': 'bb.png', 'q': 'qb.png', 'k': 'kb.png', 'p': 'pb.png',
+            'R': 'rw.png', 'N': 'nw.png', 'B': 'bw.png', 'Q': 'qw.png', 'K': 'kw.png', 'P': 'pw.png'
+        }
+        return mapping.get(symbol, 'pb.png')
+
+    def _build_captured_row(self, frame, captured_list):
+        """Rebuilds a captured-pieces row with stacked images grouped by piece type.
+        Order: Q, R, B, N, P (most valuable first)."""
+        for w in frame.winfo_children():
+            w.destroy()
+
+        if not captured_list:
+            return
+
+        # Group by symbol, preserving order: uppercase first, then lowercase
+        order = ['Q', 'R', 'B', 'N', 'P', 'q', 'r', 'b', 'n', 'p']
+        grouped = {}
+        for s in captured_list:
+            grouped[s] = grouped.get(s, 0) + 1
+
+        # Keep references to prevent GC
+        frame._stacked_refs = []
+
+        for sym in order:
+            count = grouped.get(sym, 0)
+            if count == 0:
+                continue
+            img = self._make_stacked_image(sym, count)
+            if img:
+                frame._stacked_refs.append(img)
+                lbl = tk.Label(frame, image=img, bd=0)
+                lbl.pack(side=tk.LEFT)
+
     def update_captured_display(self, board=None):
         """Updates the captured pieces panel with small piece images.
         Top row = pieces the opponent captured (what you lost).
@@ -128,22 +176,10 @@ class ChessApp:
             top_frame, top_label = self.top_pieces_frame, self.top_points_label
             bot_frame, bot_label = self.bot_pieces_frame, self.bot_points_label
 
-        # Rebuild top row (pieces you lost)
-        for w in top_frame.winfo_children():
-            w.destroy()
-        for symbol in top_captured:
-            if symbol in self.tk_piece_images:
-                lbl = tk.Label(top_frame, image=self.tk_piece_images[symbol])
-                lbl.pack(side=tk.LEFT)
+        self._build_captured_row(top_frame, top_captured)
         top_label.config(text=f"+{top_total}" if top_total > 0 else "")
 
-        # Rebuild bottom row (pieces you captured)
-        for w in bot_frame.winfo_children():
-            w.destroy()
-        for symbol in bot_captured:
-            if symbol in self.tk_piece_images:
-                lbl = tk.Label(bot_frame, image=self.tk_piece_images[symbol])
-                lbl.pack(side=tk.LEFT)
+        self._build_captured_row(bot_frame, bot_captured)
         bot_label.config(text=f"+{bot_total}" if bot_total > 0 else "")
 
     def setup_gui(self):
@@ -162,6 +198,8 @@ class ChessApp:
         options_menu.add_checkbutton(label="Show Board", variable=self.show_board, command=self.toggle_board_visibility)
         options_menu.add_separator()
         options_menu.add_command(label="Copy Log to Clipboard", command=self.copy_log_to_clipboard)
+        options_menu.add_separator()
+        options_menu.add_command(label="Set Board from Clipboard", command=self.set_board_from_log)
         menu_bar.add_cascade(label="Options", menu=options_menu)
         self.root.config(menu=menu_bar)
         
@@ -661,6 +699,80 @@ class ChessApp:
             print("Log copied to clipboard:", pgn_text)
         except Exception as e:
             print(f"Error copying log: {e}")
+
+    def set_board_from_log(self):
+        """Reads a PGN from clipboard, replays moves, and sets up the board."""
+        try:
+            pgn_text = self.root.clipboard_get()
+        except Exception:
+            print("Clipboard is empty or inaccessible.")
+            return
+
+        # Strip comments, headers, result markers, newlines
+        import re
+        pgn_text = re.sub(r'\{[^}]*\}', ' ', pgn_text)  # remove {...} comments
+        pgn_text = re.sub(r'\[.*?\]', ' ', pgn_text)     # remove [headers]
+        pgn_text = re.sub(r'1-0|0-1|1/2-1/2|\*', ' ', pgn_text)
+        pgn_text = re.sub(r'\d+\.\.\.?', ' ', pgn_text)  # remove move numbers like 1. 1...
+        tokens = pgn_text.split()
+
+        if not tokens:
+            print("No valid moves found in clipboard.")
+            return
+
+        # Reset and replay
+        self.board.reset()
+        self.initial_counts = self._count_pieces()  # snapshot starting position
+        self.position_history = [self.board.fen()]  # start history
+        self.move_log.clear()
+        for item in self.log_tree.get_children():
+            self.log_tree.delete(item)
+        self.highlighted_squares = ([], [])
+        self.move_input_text = ""
+        self.update_move_display()
+
+        for san in tokens:
+            try:
+                move = self.board.parse_san(san)
+            except ValueError:
+                print(f"Skipping invalid move: {san}")
+                continue
+            if move not in self.board.legal_moves:
+                print(f"Skipping illegal move: {san}")
+                continue
+            move_san = self.board.san(move)
+            self.move_log.append(move_san)
+            move_number = (len(self.move_log) + 1) // 2
+            if len(self.move_log) % 2 == 1:
+                self.log_tree.insert("", "end", text=str(move_number), values=[move_san, ""])
+            else:
+                items = self.log_tree.get_children()
+                if items:
+                    last_item = items[-1]
+                    current_values = self.log_tree.item(last_item)['values']
+                    self.log_tree.item(last_item, values=[current_values[0], move_san])
+            self.board.push(move)
+            self.position_history.append(self.board.fen())  # record after each move
+
+        # Auto-scroll log
+        items = self.log_tree.get_children()
+        if items:
+            self.log_tree.see(items[-1])
+
+        # Reset review mode (position_history already built in replay loop)
+        self.view_index = None
+        self._update_review_mode_ui()
+
+        # Update captured display with new board state
+        self.update_captured_display()
+
+        # If it's now the AI's turn, trigger AI move
+        player_is_white = self.play_as_white.get()
+        is_white_turn = self.board.turn == chess.WHITE
+        if (player_is_white and not is_white_turn) or (not player_is_white and is_white_turn):
+            self.ai_move()
+
+        print(f"Board set from log: {len(self.move_log)} moves replayed.")
 
 # Initialize the tkinter app
 root = tk.Tk()
