@@ -53,19 +53,21 @@ class ChessApp:
         # Current move being typed (keyboard capture)
         self.move_input_text = ""
 
-    def _count_pieces(self):
-        """Returns a dict counting pieces by symbol on the current board."""
+    def _count_pieces(self, board=None):
+        """Returns a dict counting pieces by symbol on the given board (defaults to live)."""
+        if board is None:
+            board = self.board
         counts = {}
         for square in chess.SQUARES:
-            piece = self.board.piece_at(square)
+            piece = board.piece_at(square)
             if piece:
                 symbol = piece.symbol()
                 counts[symbol] = counts.get(symbol, 0) + 1
         return counts
 
-    def get_captured_by_white(self):
+    def get_captured_by_white(self, board=None):
         """Returns (list_of_piece_symbols, total_points) captured by White (black pieces off board)."""
-        current = self._count_pieces()
+        current = self._count_pieces(board)
         captured = []
         total = 0
         for symbol in ['p', 'n', 'b', 'r', 'q']:  # black pieces (lowercase)
@@ -77,9 +79,9 @@ class ChessApp:
                 total += self.piece_values[symbol] * missing
         return captured, total
 
-    def get_captured_by_black(self):
+    def get_captured_by_black(self, board=None):
         """Returns (list_of_piece_symbols, total_points) captured by Black (white pieces off board)."""
-        current = self._count_pieces()
+        current = self._count_pieces(board)
         captured = []
         total = 0
         for symbol in ['P', 'N', 'B', 'R', 'Q']:  # white pieces (uppercase)
@@ -102,14 +104,15 @@ class ChessApp:
             img = img.resize((size, size), Image.LANCZOS)
             self.tk_piece_images[symbol] = ImageTk.PhotoImage(img)
 
-    def update_captured_display(self):
+    def update_captured_display(self, board=None):
         """Updates the captured pieces panel with small piece images.
         Top row = pieces the opponent captured (what you lost).
-        Bottom row = pieces you captured (opponent's pieces you took)."""
+        Bottom row = pieces you captured (opponent's pieces you took).
+        If board is given, computes captures for that board (used in review mode)."""
         if self.top_pieces_frame is None or self.bot_pieces_frame is None:
             return
-        black_captured, black_total = self.get_captured_by_white()
-        white_captured, white_total = self.get_captured_by_black()
+        black_captured, black_total = self.get_captured_by_white(board)
+        white_captured, white_total = self.get_captured_by_black(board)
 
         play_white = self.play_as_white.get()
 
@@ -297,8 +300,14 @@ class ChessApp:
         """Updates UI elements to reflect review mode state."""
         if self.view_index is not None:
             self.move_display_label.config(text="", fg="#333333")
+            # Show captured pieces for the historical position
+            hist_board = chess.Board()
+            hist_board.set_fen(self.position_history[self.view_index])
+            self.update_captured_display(hist_board)
         else:
             self.move_display_label.config(text=self.move_input_text, fg="#333333")
+            # Restore live captured pieces
+            self.update_captured_display()
 
     def on_key_press(self, event):
         """Global keyboard handler for move input."""
@@ -348,14 +357,19 @@ class ChessApp:
     def _normalize_notation(self, text):
         """Normalizes move input: capitalizes piece letters and castling 'O'.
         Also inserts hyphens for O-O / O-O-O notation.
-        Note: 'b' is NOT auto-capitalized — 'b' = pawn b-file, 'B' = bishop (use Shift)."""
+        'b' is special: tries lowercase (pawn b-file) first, falls back to 'B' (bishop)."""
         if not text:
             return text
         # Capitalize piece identifiers (R, N, Q, K) and castling O at start
-        # 'b' excluded: lowercase = b-file pawn move, uppercase Shift+B = bishop
         result = text
         if result[0].lower() in 'rqnko':
             result = result[0].upper() + result[1:]
+        # Handle 'b' ambiguity: try pawn b-file first, fall back to bishop
+        if result and result[0] == 'b':
+            if not self._is_valid_prefix(result):
+                alt = 'B' + result[1:]
+                if self._is_valid_prefix(alt):
+                    result = alt
         # In castling notation, turn all 'o' into 'O' (O-O, O-O-O)
         if result and result[0] == 'O':
             result = result[0] + result[1:].replace('o', 'O')
