@@ -22,10 +22,108 @@ class ChessApp:
         self.board = chess.Board()
         self.move_log = []
         self.highlighted_squares = ([], [])  # (green_squares, red_squares)
+
+        # Position history for arrow-key navigation (view-only)
+        self.position_history = [self.board.fen()]  # FEN after each move
+        self.view_index = None  # None = live position; 0..len-1 = viewing history
+        
+        # Piece values for scoring
+        self.piece_values = {
+            'p': 1, 'n': 3, 'b': 3, 'r': 5, 'q': 9, 'k': 0,
+            'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0,
+        }
+        self.piece_symbols = {
+            'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚',
+            'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
+        }
+        # Track initial piece counts to compute captures
+        self.initial_counts = self._count_pieces()
+        self.tk_piece_images = {}  # loaded after init_pygame (needs pygame)
+        self.black_pieces_frame = None
+        self.white_pieces_frame = None
+        self.black_points_label = None
+        self.white_points_label = None
         
         self.setup_gui()
         self.init_pygame()
+        self._load_tk_piece_images(24)  # small tk-compatible piece images
         self.update_pygame()
+        # Auto-focus the move entry field
+        self.move_entry.focus_set()
+
+    def _count_pieces(self):
+        """Returns a dict counting pieces by symbol on the current board."""
+        counts = {}
+        for square in chess.SQUARES:
+            piece = self.board.piece_at(square)
+            if piece:
+                symbol = piece.symbol()
+                counts[symbol] = counts.get(symbol, 0) + 1
+        return counts
+
+    def get_captured_by_white(self):
+        """Returns (list_of_piece_symbols, total_points) captured by White (black pieces off board)."""
+        current = self._count_pieces()
+        captured = []
+        total = 0
+        for symbol in ['p', 'n', 'b', 'r', 'q']:  # black pieces (lowercase)
+            initial = self.initial_counts.get(symbol, 0)
+            now = current.get(symbol, 0)
+            missing = initial - now
+            if missing > 0:
+                captured.extend([symbol] * missing)
+                total += self.piece_values[symbol] * missing
+        return captured, total
+
+    def get_captured_by_black(self):
+        """Returns (list_of_piece_symbols, total_points) captured by Black (white pieces off board)."""
+        current = self._count_pieces()
+        captured = []
+        total = 0
+        for symbol in ['P', 'N', 'B', 'R', 'Q']:  # white pieces (uppercase)
+            initial = self.initial_counts.get(symbol, 0)
+            now = current.get(symbol, 0)
+            missing = initial - now
+            if missing > 0:
+                captured.extend([symbol] * missing)
+                total += self.piece_values[symbol] * missing
+        return captured, total
+
+    def _load_tk_piece_images(self, size):
+        """Loads small PIL ImageTk images of pieces for the captured panel."""
+        pieces = {
+            'r': 'rb.png', 'n': 'nb.png', 'b': 'bb.png', 'q': 'qb.png', 'k': 'kb.png', 'p': 'pb.png',
+            'R': 'rw.png', 'N': 'nw.png', 'B': 'bw.png', 'Q': 'qw.png', 'K': 'kw.png', 'P': 'pw.png'
+        }
+        for symbol, filename in pieces.items():
+            img = Image.open(f'images/{filename}')
+            img = img.resize((size, size), Image.LANCZOS)
+            self.tk_piece_images[symbol] = ImageTk.PhotoImage(img)
+
+    def update_captured_display(self):
+        """Updates the captured pieces panel with small piece images."""
+        if self.black_pieces_frame is None or self.white_pieces_frame is None:
+            return
+        black_captured, black_total = self.get_captured_by_white()
+        white_captured, white_total = self.get_captured_by_black()
+
+        # Rebuild black (captured by White) row
+        for w in self.black_pieces_frame.winfo_children():
+            w.destroy()
+        for symbol in black_captured:
+            if symbol in self.tk_piece_images:
+                lbl = tk.Label(self.black_pieces_frame, image=self.tk_piece_images[symbol])
+                lbl.pack(side=tk.LEFT)
+        self.black_points_label.config(text=f"+{black_total}" if black_total > 0 else "")
+
+        # Rebuild white (captured by Black) row
+        for w in self.white_pieces_frame.winfo_children():
+            w.destroy()
+        for symbol in white_captured:
+            if symbol in self.tk_piece_images:
+                lbl = tk.Label(self.white_pieces_frame, image=self.tk_piece_images[symbol])
+                lbl.pack(side=tk.LEFT)
+        self.white_points_label.config(text=f"+{white_total}" if white_total > 0 else "")
 
     def setup_gui(self):
         # Top menu
@@ -86,6 +184,28 @@ class ChessApp:
         self.log_tree.pack(side="left")
         scrollbar.pack(side="right", fill="y")
 
+        # --- Captured Pieces / Score Panel ---
+        captured_frame = tk.LabelFrame(settings_frame, text="Captured Pieces", padx=5, pady=5)
+        captured_frame.pack(anchor=tk.W, pady=(10, 0), fill=tk.X)
+
+        # Row: Captured by White (black pieces)
+        white_cap_row = tk.Frame(captured_frame)
+        white_cap_row.pack(anchor=tk.W, fill=tk.X)
+        tk.Label(white_cap_row, text="By White:", font=("TkDefaultFont", 10)).pack(side=tk.LEFT)
+        self.black_pieces_frame = tk.Frame(white_cap_row)
+        self.black_pieces_frame.pack(side=tk.LEFT)
+        self.black_points_label = tk.Label(white_cap_row, text="", font=("TkDefaultFont", 10, "bold"))
+        self.black_points_label.pack(side=tk.LEFT, padx=(4, 0))
+
+        # Row: Captured by Black (white pieces)
+        black_cap_row = tk.Frame(captured_frame)
+        black_cap_row.pack(anchor=tk.W, fill=tk.X)
+        tk.Label(black_cap_row, text="By Black:", font=("TkDefaultFont", 10)).pack(side=tk.LEFT)
+        self.white_pieces_frame = tk.Frame(black_cap_row)
+        self.white_pieces_frame.pack(side=tk.LEFT)
+        self.white_points_label = tk.Label(black_cap_row, text="", font=("TkDefaultFont", 10, "bold"))
+        self.white_points_label.pack(side=tk.LEFT, padx=(4, 0))
+
         # Move input field
         tk.Label(settings_frame, text="Enter your move:").pack(anchor=tk.W)
         self.move_var = tk.StringVar()
@@ -95,6 +215,12 @@ class ChessApp:
 
         # Bind Enter key
         self.move_entry.bind("<Return>", self.submit_move)
+        
+        # Bind arrow keys for move history navigation (view-only)
+        self.root.bind("<Left>", self.navigate_back)
+        self.root.bind("<Right>", self.navigate_forward)
+        self.root.bind("<Up>", self.navigate_first)
+        self.root.bind("<Down>", self.navigate_last)
         
         # Pygame display settings on Tkinter Canvas
         self.canvas = tk.Canvas(self.root, width=720, height=720)
@@ -112,6 +238,58 @@ class ChessApp:
         else:
             # Hide board (blind chess mode)
             self.canvas.pack_forget()
+
+    def navigate_back(self, event=None):
+        """Left arrow: go back one move in history (view-only)."""
+        if len(self.position_history) <= 1:
+            return  # No moves to navigate back to
+        if self.view_index is None:
+            # Currently live — start viewing from the last position
+            self.view_index = len(self.position_history) - 2  # one before last
+        else:
+            self.view_index = max(0, self.view_index - 1)
+        self._update_review_mode_ui()
+
+    def navigate_forward(self, event=None):
+        """Right arrow: go forward one move in history (view-only)."""
+        if self.view_index is not None:
+            if self.view_index < len(self.position_history) - 2:
+                self.view_index += 1
+            else:
+                # Reached the end — go back to live
+                self.view_index = None
+        self._update_review_mode_ui()
+
+    def navigate_first(self, event=None):
+        """Up arrow: go to the first position in history."""
+        if len(self.position_history) > 1:
+            self.view_index = 0
+        self._update_review_mode_ui()
+
+    def navigate_last(self, event=None):
+        """Down arrow: go back to live (latest) position."""
+        self.view_index = None
+        self._update_review_mode_ui()
+
+    def _update_review_mode_ui(self):
+        """Updates UI elements to reflect review mode state."""
+        if self.view_index is not None:
+            self.move_entry.config(state="disabled")
+            move_num = self.view_index + 1
+            color = "White" if self.view_index % 2 == 0 else "Black"
+            self.move_entry.delete(0, tk.END)
+            self.move_entry.insert(0, f"[Review: move {move_num} ({color})]")
+        else:
+            self.move_entry.config(state="normal")
+            self.move_entry.delete(0, tk.END)
+
+    def get_display_board(self):
+        """Returns the board to display (historical if in review mode, else live)."""
+        if self.view_index is not None and 0 <= self.view_index < len(self.position_history):
+            b = chess.Board()
+            b.set_fen(self.position_history[self.view_index])
+            return b
+        return self.board
 
     def init_pygame(self):
         pygame.init()
@@ -140,6 +318,8 @@ class ChessApp:
         self.screen.fill(pygame.Color("black"))
         square_size = 80
         board_offset = 40  # Space for coordinates
+
+        display_board = self.get_display_board()
         
         # Draw the board
         for r in range(8):
@@ -150,15 +330,19 @@ class ChessApp:
                                          r * square_size + board_offset, 
                                          square_size, square_size))
                 
-                piece = self.board.piece_at(chess.square(c, 7 - r))
+                piece = display_board.piece_at(chess.square(c, 7 - r))
                 
                 if piece:
                     piece_img = self.images[piece.symbol()]
                     self.screen.blit(piece_img, (c * square_size + board_offset, 
                                                r * square_size + board_offset))
         
-        # Draw highlights from move entry input
-        green_squares, red_squares = self.highlighted_squares
+        # Draw highlights from move entry input (only when not in review mode)
+        if self.view_index is None:
+            green_squares, red_squares = self.highlighted_squares
+        else:
+            green_squares, red_squares = [], []
+            
         green_overlay = pygame.Surface((square_size, square_size), pygame.SRCALPHA)
         green_overlay.fill((0, 200, 0, 90))  # light transparent green
         red_overlay = pygame.Surface((square_size, square_size), pygame.SRCALPHA)
@@ -217,11 +401,25 @@ class ChessApp:
         # Clear highlights
         self.highlighted_squares = ([], [])
         
+        # Reset position history and review mode
+        self.position_history = [self.board.fen()]
+        self.view_index = None
+        self._update_review_mode_ui()
+        
+        # Reset piece tracking
+        self.initial_counts = self._count_pieces()
+        self.update_captured_display()
+        
         # If playing as black, make AI play first
         if not self.play_as_white.get():
             self.ai_move()
 
     def submit_move(self, event=None):
+        # Reject moves while in review mode
+        if self.view_index is not None:
+            print("Cannot move in review mode. Press Down arrow to return to live game.")
+            return
+
         # Read move from input field and apply to board
         move_text = self.move_entry.get()
         move = self.parse_algebraic(move_text)
@@ -234,6 +432,8 @@ class ChessApp:
             if (player_is_white and is_white_turn) or (not player_is_white and not is_white_turn):
                 self.add_to_log(move)  # Log BEFORE executing the move
                 self.board.push(move)
+                self.position_history.append(self.board.fen())
+                self.update_captured_display()
                 self.move_entry.delete(0, tk.END)
                 self.highlighted_squares = ([], [])  # Clear highlights
                 self.ai_move()  # Call AI to make its move
@@ -282,6 +482,8 @@ class ChessApp:
     def on_move_entry_change(self, *args):
         """Highlights squares based on partial SAN input as the user types.
         Green: piece's current square. Red: possible destination squares."""
+        if self.view_index is not None:
+            return  # Don't process highlights while in review mode
         text = self.move_var.get().strip()
         if not text:
             self.highlighted_squares = ([], [])
@@ -319,6 +521,8 @@ class ChessApp:
             if move in self.board.legal_moves:
                 self.add_to_log(move)  # Log BEFORE executing the move
                 self.board.push(move)
+                self.position_history.append(self.board.fen())
+                self.update_captured_display()
     
     def toggle_player_color(self):
         """Toggles between playing as white or black."""
