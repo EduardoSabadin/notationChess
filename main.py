@@ -39,17 +39,19 @@ class ChessApp:
         # Track initial piece counts to compute captures
         self.initial_counts = self._count_pieces()
         self.tk_piece_images = {}  # loaded after init_pygame (needs pygame)
-        self.black_pieces_frame = None
-        self.white_pieces_frame = None
-        self.black_points_label = None
-        self.white_points_label = None
+        self.top_pieces_frame = None
+        self.bot_pieces_frame = None
+        self.top_points_label = None
+        self.bot_points_label = None
+        self.black_pieces_frame = None  # compat
+        self.white_pieces_frame = None  # compat
         
         self.setup_gui()
         self.init_pygame()
         self._load_tk_piece_images(24)  # small tk-compatible piece images
         self.update_pygame()
-        # Auto-focus the move entry field
-        self.move_entry.focus_set()
+        # Current move being typed (keyboard capture)
+        self.move_input_text = ""
 
     def _count_pieces(self):
         """Returns a dict counting pieces by symbol on the current board."""
@@ -101,29 +103,45 @@ class ChessApp:
             self.tk_piece_images[symbol] = ImageTk.PhotoImage(img)
 
     def update_captured_display(self):
-        """Updates the captured pieces panel with small piece images."""
-        if self.black_pieces_frame is None or self.white_pieces_frame is None:
+        """Updates the captured pieces panel with small piece images.
+        Top row = pieces the opponent captured (what you lost).
+        Bottom row = pieces you captured (opponent's pieces you took)."""
+        if self.top_pieces_frame is None or self.bot_pieces_frame is None:
             return
         black_captured, black_total = self.get_captured_by_white()
         white_captured, white_total = self.get_captured_by_black()
 
-        # Rebuild black (captured by White) row
-        for w in self.black_pieces_frame.winfo_children():
-            w.destroy()
-        for symbol in black_captured:
-            if symbol in self.tk_piece_images:
-                lbl = tk.Label(self.black_pieces_frame, image=self.tk_piece_images[symbol])
-                lbl.pack(side=tk.LEFT)
-        self.black_points_label.config(text=f"+{black_total}" if black_total > 0 else "")
+        play_white = self.play_as_white.get()
 
-        # Rebuild white (captured by Black) row
-        for w in self.white_pieces_frame.winfo_children():
+        # Determine which captured set goes on top (enemy's captures / what you lost)
+        if play_white:
+            top_captured, top_total = white_captured, white_total   # white pieces black took
+            bot_captured, bot_total = black_captured, black_total   # black pieces white took
+            top_frame, top_label = self.top_pieces_frame, self.top_points_label
+            bot_frame, bot_label = self.bot_pieces_frame, self.bot_points_label
+        else:
+            top_captured, top_total = black_captured, black_total   # black pieces white took
+            bot_captured, bot_total = white_captured, white_total   # white pieces black took
+            top_frame, top_label = self.top_pieces_frame, self.top_points_label
+            bot_frame, bot_label = self.bot_pieces_frame, self.bot_points_label
+
+        # Rebuild top row (pieces you lost)
+        for w in top_frame.winfo_children():
             w.destroy()
-        for symbol in white_captured:
+        for symbol in top_captured:
             if symbol in self.tk_piece_images:
-                lbl = tk.Label(self.white_pieces_frame, image=self.tk_piece_images[symbol])
+                lbl = tk.Label(top_frame, image=self.tk_piece_images[symbol])
                 lbl.pack(side=tk.LEFT)
-        self.white_points_label.config(text=f"+{white_total}" if white_total > 0 else "")
+        top_label.config(text=f"+{top_total}" if top_total > 0 else "")
+
+        # Rebuild bottom row (pieces you captured)
+        for w in bot_frame.winfo_children():
+            w.destroy()
+        for symbol in bot_captured:
+            if symbol in self.tk_piece_images:
+                lbl = tk.Label(bot_frame, image=self.tk_piece_images[symbol])
+                lbl.pack(side=tk.LEFT)
+        bot_label.config(text=f"+{bot_total}" if bot_total > 0 else "")
 
     def setup_gui(self):
         # Top menu
@@ -188,33 +206,37 @@ class ChessApp:
         captured_frame = tk.LabelFrame(settings_frame, text="Captured Pieces", padx=5, pady=5)
         captured_frame.pack(anchor=tk.W, pady=(10, 0), fill=tk.X)
 
-        # Row: Captured by White (black pieces)
-        white_cap_row = tk.Frame(captured_frame)
-        white_cap_row.pack(anchor=tk.W, fill=tk.X)
-        tk.Label(white_cap_row, text="By White:", font=("TkDefaultFont", 10)).pack(side=tk.LEFT)
-        self.black_pieces_frame = tk.Frame(white_cap_row)
-        self.black_pieces_frame.pack(side=tk.LEFT)
-        self.black_points_label = tk.Label(white_cap_row, text="", font=("TkDefaultFont", 10, "bold"))
-        self.black_points_label.pack(side=tk.LEFT, padx=(4, 0))
+        # Top row: pieces the opponent captured (what you lost)
+        top_row = tk.Frame(captured_frame)
+        top_row.pack(anchor=tk.W, fill=tk.X)
+        self.top_pieces_frame = tk.Frame(top_row)
+        self.top_pieces_frame.pack(side=tk.LEFT)
+        self.top_points_label = tk.Label(top_row, text="", font=("TkDefaultFont", 10, "bold"), fg="#cc3333")
+        self.top_points_label.pack(side=tk.LEFT, padx=(4, 0))
+        # compat aliases (will be overwritten by update_captured_display logic)
+        self.white_pieces_frame = self.top_pieces_frame
+        self.white_points_label = self.top_points_label
 
-        # Row: Captured by Black (white pieces)
-        black_cap_row = tk.Frame(captured_frame)
-        black_cap_row.pack(anchor=tk.W, fill=tk.X)
-        tk.Label(black_cap_row, text="By Black:", font=("TkDefaultFont", 10)).pack(side=tk.LEFT)
-        self.white_pieces_frame = tk.Frame(black_cap_row)
-        self.white_pieces_frame.pack(side=tk.LEFT)
-        self.white_points_label = tk.Label(black_cap_row, text="", font=("TkDefaultFont", 10, "bold"))
-        self.white_points_label.pack(side=tk.LEFT, padx=(4, 0))
+        # Bottom row: pieces you captured (opponent's pieces you took)
+        bot_row = tk.Frame(captured_frame)
+        bot_row.pack(anchor=tk.W, fill=tk.X)
+        self.bot_pieces_frame = tk.Frame(bot_row)
+        self.bot_pieces_frame.pack(side=tk.LEFT)
+        self.bot_points_label = tk.Label(bot_row, text="", font=("TkDefaultFont", 10, "bold"), fg="#33aa33")
+        self.bot_points_label.pack(side=tk.LEFT, padx=(4, 0))
+        # compat aliases
+        self.black_pieces_frame = self.bot_pieces_frame
+        self.black_points_label = self.bot_points_label
 
-        # Move input field
-        tk.Label(settings_frame, text="Enter your move:").pack(anchor=tk.W)
-        self.move_var = tk.StringVar()
-        self.move_var.trace_add("write", self.on_move_entry_change)
-        self.move_entry = tk.Entry(settings_frame, textvariable=self.move_var)
-        self.move_entry.pack(anchor=tk.W, pady=5)
+        # Move display — large title-style component
+        self.move_display_label = tk.Label(settings_frame, text="",
+            font=("Courier", 32, "bold"),
+            anchor=tk.W, relief=tk.SUNKEN, padx=12, pady=8,
+            bg="#fffff0", fg="#333333")
+        self.move_display_label.pack(anchor=tk.W, pady=(2, 0), fill=tk.X)
 
-        # Bind Enter key
-        self.move_entry.bind("<Return>", self.submit_move)
+        # Bind keyboard for move input (global capture)
+        self.root.bind("<KeyPress>", self.on_key_press)
         
         # Bind arrow keys for move history navigation (view-only)
         self.root.bind("<Left>", self.navigate_back)
@@ -274,14 +296,109 @@ class ChessApp:
     def _update_review_mode_ui(self):
         """Updates UI elements to reflect review mode state."""
         if self.view_index is not None:
-            self.move_entry.config(state="disabled")
-            move_num = self.view_index + 1
-            color = "White" if self.view_index % 2 == 0 else "Black"
-            self.move_entry.delete(0, tk.END)
-            self.move_entry.insert(0, f"[Review: move {move_num} ({color})]")
+            self.move_display_label.config(text="", fg="#333333")
         else:
-            self.move_entry.config(state="normal")
-            self.move_entry.delete(0, tk.END)
+            self.move_display_label.config(text=self.move_input_text, fg="#333333")
+
+    def on_key_press(self, event):
+        """Global keyboard handler for move input."""
+        # Don't process input in review mode
+        if self.view_index is not None:
+            return
+
+        keysym = event.keysym
+
+        # Let arrow keys pass through (handled by separate bindings)
+        if keysym in ('Left', 'Right', 'Up', 'Down'):
+            return
+
+        # Submit move
+        if keysym in ('Return', 'space'):
+            self.submit_move()
+            return 'break'
+
+        # Clear input
+        if keysym in ('BackSpace', 'Escape'):
+            self.move_input_text = ""
+            self.update_move_display()
+            self.highlighted_squares = ([], [])
+            return 'break'
+
+        char = event.char
+        if not char or not char.isprintable():
+            return 'break'
+
+        # Allowed characters for algebraic notation
+        allowed = set('abcdefgh12345678xX+-=#rbqnkRBQNKOo')
+        if char not in allowed:
+            return 'break'
+
+        # Build candidate and normalize
+        candidate = self.move_input_text + char
+        candidate = self._normalize_notation(candidate)
+
+        # Only accept if it's a valid prefix of some legal move
+        if self._is_valid_prefix(candidate):
+            self.move_input_text = candidate
+            self.update_move_display()
+            self._update_highlights()
+
+        return 'break'
+
+    def _normalize_notation(self, text):
+        """Normalizes move input: capitalizes piece letters and castling 'O'.
+        Also inserts hyphens for O-O / O-O-O notation.
+        Note: 'b' is NOT auto-capitalized — 'b' = pawn b-file, 'B' = bishop (use Shift)."""
+        if not text:
+            return text
+        # Capitalize piece identifiers (R, N, Q, K) and castling O at start
+        # 'b' excluded: lowercase = b-file pawn move, uppercase Shift+B = bishop
+        result = text
+        if result[0].lower() in 'rqnko':
+            result = result[0].upper() + result[1:]
+        # In castling notation, turn all 'o' into 'O' (O-O, O-O-O)
+        if result and result[0] == 'O':
+            result = result[0] + result[1:].replace('o', 'O')
+            # Auto-insert hyphens: OOO -> O-O-O, OO -> O-O (if no hyphen typed yet)
+            if '-' not in result:
+                if result == 'OOO':
+                    result = 'O-O-O'
+                elif result == 'OO':
+                    result = 'O-O'
+        return result
+
+    def _is_valid_prefix(self, prefix):
+        """Returns True if any legal SAN move starts with the given prefix."""
+        for move in self.board.legal_moves:
+            try:
+                if self.board.san(move).startswith(prefix):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _update_highlights(self):
+        """Highlights squares based on current move_input_text."""
+        text = self.move_input_text
+        if not text:
+            self.highlighted_squares = ([], [])
+            return
+        green_squares = []
+        red_squares = []
+        for move in self.board.legal_moves:
+            try:
+                if self.board.san(move).startswith(text):
+                    green_squares.append(move.from_square)
+                    red_squares.append(move.to_square)
+            except Exception:
+                pass
+        self.highlighted_squares = (green_squares, red_squares)
+
+    def update_move_display(self):
+        """Updates the move display label with current input."""
+        if self.view_index is not None:
+            return
+        self.move_display_label.config(text=self.move_input_text, fg="#333333")
 
     def get_display_board(self):
         """Returns the board to display (historical if in review mode, else live)."""
@@ -401,6 +518,10 @@ class ChessApp:
         # Clear highlights
         self.highlighted_squares = ([], [])
         
+        # Clear move input
+        self.move_input_text = ""
+        self.update_move_display()
+        
         # Reset position history and review mode
         self.position_history = [self.board.fen()]
         self.view_index = None
@@ -420,8 +541,9 @@ class ChessApp:
             print("Cannot move in review mode. Press Down arrow to return to live game.")
             return
 
-        # Read move from input field and apply to board
-        move_text = self.move_entry.get()
+        move_text = self.move_input_text
+        if not move_text:
+            return
         move = self.parse_algebraic(move_text)
 
         if move and move in self.board.legal_moves:
@@ -434,7 +556,8 @@ class ChessApp:
                 self.board.push(move)
                 self.position_history.append(self.board.fen())
                 self.update_captured_display()
-                self.move_entry.delete(0, tk.END)
+                self.move_input_text = ""
+                self.update_move_display()
                 self.highlighted_squares = ([], [])  # Clear highlights
                 self.ai_move()  # Call AI to make its move
             else:
@@ -478,30 +601,6 @@ class ChessApp:
             return move
         except ValueError:
             return None
-
-    def on_move_entry_change(self, *args):
-        """Highlights squares based on partial SAN input as the user types.
-        Green: piece's current square. Red: possible destination squares."""
-        if self.view_index is not None:
-            return  # Don't process highlights while in review mode
-        text = self.move_var.get().strip()
-        if not text:
-            self.highlighted_squares = ([], [])
-            return
-        
-        green_squares = []
-        red_squares = []
-        
-        for move in self.board.legal_moves:
-            try:
-                san = self.board.san(move)
-                if san.startswith(text):
-                    green_squares.append(move.from_square)
-                    red_squares.append(move.to_square)
-            except Exception:
-                pass
-        
-        self.highlighted_squares = (green_squares, red_squares)
 
     def ai_move(self):
         """Executes the AI move."""
